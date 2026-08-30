@@ -1,5 +1,8 @@
 import os
+import glob
+import threading
 import requests
+from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -11,22 +14,30 @@ from telegram.ext import (
 )
 import yt_dlp
 
-# الإعدادات الرئيسية
-TOKEN = "8081564731:AAFazIC1PLGMdMF0yeMUCT915N2yOWci4L8"
+# --- 1. إعداد خادم Web لمنع خمول Replit ---
+app_web = Flask(__name__)
+
+@app_web.route('/')
+def home():
+    return "Bot is alive and running 24/7!"
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 8080))
+    app_web.run(host='0.0.0.0', port=port)
+
+# --- 2. الإعدادات الرئيسية والتوكن الجديد ---
+TOKEN = "8081564731:AAEc3kmn19kUpcAzkV9s-LcVb0QJUmw-ftE"
 CHANNEL_USERNAME = "@kingdeveloper2004"
 CHANNEL_URL = "https://t.me/kingdeveloper2004"
 
 def upload_to_gofile(file_path):
-    """رفع الملفات الكبيرة إلى GoFile والحصول على رابط مباشر مجاني"""
     try:
         server_resp = requests.get("https://api.gofile.io/getServer").json()
         if server_resp.get("status") == "ok":
             server = server_resp["data"]["server"]
             upload_url = f"https://{server}.gofile.io/uploadFile"
-            
             with open(file_path, 'rb') as f:
                 response = requests.post(upload_url, files={'file': f}).json()
-                
             if response.get("status") == "ok":
                 return response["data"]["downloadPage"]
     except Exception as e:
@@ -34,7 +45,6 @@ def upload_to_gofile(file_path):
     return None
 
 async def check_subscription(user_id, context):
-    """فحص ما إذا كان المستخدم مشتركاً في القناة أم لا"""
     try:
         member = await context.bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user_id)
         return member.status in ['member', 'administrator', 'creator']
@@ -115,9 +125,8 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     choice = query.data
     await query.edit_message_text("⏳ جاري التحميل، معالجة الجودة وتدميج الترجمة إن وجدت...")
 
-    filename = "downloaded_media.mp4" if choice != 'audio' else "downloaded_media.mp3"
-    
-    # تحديد تنسيق الجودة حسب اختيار المستخدم
+    base_filename = f"media_{query.from_user.id}"
+
     if choice == 'best':
         fmt = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
     elif choice in ['1080p', '720p', '480p', '360p']:
@@ -126,33 +135,43 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         fmt = 'bestaudio/best'
 
-    # إعدادات yt-dlp مع خيارات الترجمة المدمجة
     ydl_opts = {
         'format': fmt,
-        'outtmpl': filename,
+        'outtmpl': base_filename + '.%(ext)s',
         'quiet': True,
         'nocheckcertificate': True,
         'writesubtitles': True,
         'writeautomaticsub': True,
         'subtitleslangs': ['ar', 'en'],
-        'embedsubtitles': True,
         'extractor_args': {'youtube': {'player_client': ['ios', 'android']}}
     }
+
+    if choice == 'audio':
+        ydl_opts['postprocessors'] = [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }]
+    else:
+        ydl_opts['embedsubtitles'] = True
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 
-        if not os.path.exists(filename):
+        matching_files = glob.glob(f"{base_filename}.*")
+        downloaded_file = next((f for f in matching_files if not f.endswith(('.vtt', '.srt', '.json'))), None)
+
+        if not downloaded_file or not os.path.exists(downloaded_file):
             await query.edit_message_text("❌ تعذر تحميل الملف، تأكد من صحة الرابط.")
             return
 
-        file_size = os.path.getsize(filename) / (1024 * 1024)
+        file_size = os.path.getsize(downloaded_file) / (1024 * 1024)
         channel_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📢 اشترك في قناتنا", url=CHANNEL_URL)]])
 
         if file_size < 48:
             await query.edit_message_text("⬆️ جاري رفع الملف إلى تليجرام...")
-            with open(filename, 'rb') as f:
+            with open(downloaded_file, 'rb') as f:
                 if choice == 'audio':
                     await context.bot.send_audio(
                         chat_id=query.message.chat_id,
@@ -170,7 +189,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.delete_message()
         else:
             await query.edit_message_text("📦 حجم الملف كبير جداً (>48MB)، جاري رفعه على سيرفر خارجي...")
-            download_link = upload_to_gofile(filename)
+            download_link = upload_to_gofile(downloaded_file)
             if download_link:
                 await query.edit_message_text(
                     f"✅ **تم التحميل بنجاح!**\n\n📏 **الحجم:** `{file_size:.1f} MB`\n\n🔗 **الرابط المباشر:**\n{download_link}\n\n📢 {CHANNEL_URL}",
@@ -183,13 +202,20 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await query.edit_message_text(f"حدث خطأ أثناء التحميل:\n`{str(e)}`", parse_mode="Markdown")
     finally:
-        if os.path.exists(filename):
-            os.remove(filename)
+        for f in glob.glob(f"{base_filename}*"):
+            try:
+                os.remove(f)
+            except Exception:
+                pass
 
 if __name__ == '__main__':
+    t = threading.Thread(target=run_web_server)
+    t.daemon = True
+    t.start()
+
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(button_click))
-    print("البوت يعمل الآن بنجاح...")
+    print("البوت يعمل بالتوكن الجديد بنجاح...")
     app.run_polling()
