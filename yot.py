@@ -5,7 +5,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Cal
 import yt_dlp
 
 # توكن البوت الخاص بك
-TOKEN = "8081564731:AAFazIC1PLGMdMF0yeMUCT915N2yOWci4L8"
+TOKEN = "8081564731:AAG4qQK-pwSUxkbCjwm2oNSifwzUu2o6zxk"
 
 def upload_to_gofile(file_path):
     """رفع الملف إلى GoFile والحصول على رابط مباشر مجاني"""
