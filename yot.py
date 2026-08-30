@@ -10,7 +10,6 @@ TOKEN = "8081564731:AAFazIC1PLGMdMF0yeMUCT915N2yOWci4L8"
 def upload_to_gofile(file_path):
     """رفع الملف إلى GoFile والحصول على رابط مباشر مجاني"""
     try:
-        # الحصول على أفضل سيرفر للرفع
         server_resp = requests.get("https://api.gofile.io/getServer").json()
         if server_resp.get("status") == "ok":
             server = server_resp["data"]["server"]
@@ -26,7 +25,7 @@ def upload_to_gofile(file_path):
     return None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("أهلاً بك! أرسل لي رابط أي فيديو من (يوتيوب، إنستغرام، تيك توك، فيسبوك) وسأقوم بتحميله لك فوراً.")
+    await update.message.reply_text("أهلاً بك! أرسل لي رابط أي فيديو وسأقوم بتحميله لك فوراً.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text.strip()
@@ -57,20 +56,25 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     filename = "downloaded_media.mp4" if choice == 'video' else "downloaded_media.mp3"
     fmt = 'bestvideo+bestaudio/best' if choice == 'video' else 'bestaudio/best'
 
+    # إعدادات متقدمة لتجاوز حظر يوتيوب للـ IPs السحابية
     ydl_opts = {
         'format': fmt,
         'outtmpl': filename,
         'quiet': True,
         'nocheckcertificate': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['ios', 'android']
+            }
+        }
     }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 
-        file_size = os.path.getsize(filename) / (1024 * 1024)  # الحجم بالميجابايت
+        file_size = os.path.getsize(filename) / (1024 * 1024)
 
-        # إذا كان الحجم أقل من 48 ميجابايت يرسله مباشرة على تليجرام
         if file_size < 48:
             await query.edit_message_text("⬆️ جاري رفع الملف إلى تليجرام...")
             with open(filename, 'rb') as f:
@@ -80,7 +84,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_audio(chat_id=query.message.chat_id, audio=f)
             await query.delete_message()
         else:
-            # إذا كان الملف كبيراً يرفعه إلى GoFile مجاناً
             await query.edit_message_text("📦 حجم الملف كبير جداً لتليجرام، جاري رفعه على سيرفر خارجي مجاني...")
             download_link = upload_to_gofile(filename)
             
@@ -105,6 +108,5 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(button_click))
-    print("البوت يعمل الآن بدون أخطاء...")
+    print("البوت يعمل الآن بدون حظر يوتيوب...")
     app.run_polling()
-
