@@ -20,7 +20,7 @@ def unshorten_url(url: str) -> str:
     """فك الروابط المختصرة مثل vt.tiktok.com و youtu.be لتفادي الحظر"""
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
         }
         response = requests.head(url, allow_redirects=True, timeout=10, headers=headers)
         return response.url
@@ -138,7 +138,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         fmt = 'bestaudio/best'
 
-    # خيارات متقدمة لتخطي حظر يوتيوب والتيك توك على Render
+    # إعدادات yt-dlp المحدثة والآمنة لتجاوز حظر الخوادم
     ydl_opts = {
         'format': fmt,
         'outtmpl': filename,
@@ -148,15 +148,14 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'writeautomaticsub': True,
         'subtitleslangs': ['ar', 'en'],
         'embedsubtitles': True,
-        # استخدام إعدادات العملاء البديلة لليوتيوب
         'extractor_args': {
             'youtube': {
-                'player_client': ['mweb', 'tv_embedded', 'ios'],
-                'skip': ['webpage', 'configs']
+                'player_client': ['ios', 'android', 'mweb'],
+                'player_skip': ['webpage', 'configs']
             }
         },
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9',
         }
     }
