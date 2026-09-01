@@ -1,5 +1,4 @@
 import os
-import re
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -12,13 +11,13 @@ from telegram.ext import (
 )
 import yt_dlp
 
-# الإعدادات الرئيسية (جلب التوكن من بيئة Render لحمايته)
+# الإعدادات الرئيسية
 TOKEN = os.getenv("BOT_TOKEN", "8081564731:AAFazIC1PLGMdMF0yeMUCT915N2yOWci4L8")
 CHANNEL_USERNAME = "@kingdeveloper2004"
 CHANNEL_URL = "https://t.me/kingdeveloper2004"
 
 def unshorten_url(url: str) -> str:
-    """فك الروابط المختصرة مثل vt.tiktok.com و youtu.be لتفادي حظر المكتبة"""
+    """فك الروابط المختصرة مثل vt.tiktok.com و youtu.be لتفادي الحظر"""
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -97,7 +96,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("من فضلك أرسل رابطاً صحيحاً يبدأ بـ http أو https.")
         return
 
-    # فك الرابط المختصر وحفظه في الجلسة
     final_url = unshorten_url(raw_url)
     context.user_data['url'] = final_url
 
@@ -132,7 +130,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     filename = f"media_{query.message.message_id}." + ("mp3" if choice == 'audio' else "mp4")
     
-    # تحديد تنسيق الجودة حسب اختيار المستخدم
     if choice == 'best':
         fmt = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
     elif choice in ['1080p', '720p', '480p', '360p']:
@@ -141,7 +138,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         fmt = 'bestaudio/best'
 
-    # إعدادات yt-dlp المحسنة للتغلب على الحظر والـ Captcha
+    # خيارات متقدمة لتخطي حظر يوتيوب والتيك توك على Render
     ydl_opts = {
         'format': fmt,
         'outtmpl': filename,
@@ -151,9 +148,17 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'writeautomaticsub': True,
         'subtitleslangs': ['ar', 'en'],
         'embedsubtitles': True,
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'referer': 'https://www.tiktok.com/',
-        'extractor_args': {'youtube': {'player_client': ['android', 'ios']}}
+        # استخدام إعدادات العملاء البديلة لليوتيوب
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['mweb', 'tv_embedded', 'ios'],
+                'skip': ['webpage', 'configs']
+            }
+        },
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+        }
     }
 
     try:
