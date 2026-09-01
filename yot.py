@@ -11,21 +11,14 @@ from telegram.ext import (
 )
 import yt_dlp
 
-TOKEN = os.getenv("BOT_TOKEN", "8081564731:AAFazIC1PLGMdMF0yeMUCT915N2yOWci4L8")
+# الإعدادات الرئيسية
+TOKEN = "8081564731:AAFxCnLSQgn7jlsZvGSdMXMzC3pGsVmAXkM"
 CHANNEL_USERNAME = "@kingdeveloper2004"
 CHANNEL_URL = "https://t.me/kingdeveloper2004"
 
-def unshorten_url(url: str) -> str:
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-        }
-        response = requests.head(url, allow_redirects=True, timeout=10, headers=headers)
-        return response.url
-    except Exception:
-        return url
 
 def upload_to_gofile(file_path):
+    """رفع الملفات الكبيرة إلى GoFile والحصول على رابط مباشر مجاني"""
     try:
         server_resp = requests.get("https://api.gofile.io/getServer").json()
         if server_resp.get("status") == "ok":
@@ -41,13 +34,16 @@ def upload_to_gofile(file_path):
         print(f"GoFile Upload Error: {e}")
     return None
 
+
 async def check_subscription(user_id, context):
+    """فحص ما إذا كان المستخدم مشتركاً في القناة أم لا"""
     try:
         member = await context.bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user_id)
         return member.status in ['member', 'administrator', 'creator']
     except Exception as e:
         print(f"خطأ في التحقق من الاشتراك: {e}")
         return True
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -71,6 +67,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     is_subscribed = await check_subscription(user_id, context)
@@ -87,14 +84,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    raw_url = update.message.text.strip()
-    if not raw_url.startswith("http"):
+    url = update.message.text.strip()
+    if not url.startswith("http"):
         await update.message.reply_text("من فضلك أرسل رابطاً صحيحاً يبدأ بـ http أو https.")
         return
 
-    final_url = unshorten_url(raw_url)
-    context.user_data['url'] = final_url
-
+    context.user_data['url'] = url
     keyboard = [
         [InlineKeyboardButton("🎬 أعلى جودة متاحة", callback_data='best')],
         [InlineKeyboardButton("📹 1080p (FHD)", callback_data='1080p'), InlineKeyboardButton("📹 720p (HD)", callback_data='720p')],
@@ -103,6 +98,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📢 قناتنا على تليجرام", url=CHANNEL_URL)]
     ]
     await update.message.reply_text("اختر الجودة أو الصيغة المطلوبة:", reply_markup=InlineKeyboardMarkup(keyboard))
+
 
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -124,8 +120,9 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     choice = query.data
     await query.edit_message_text("⏳ جاري التحميل، معالجة الجودة وتدميج الترجمة إن وجدت...")
 
-    filename = f"media_{query.message.message_id}." + ("mp3" if choice == 'audio' else "mp4")
+    filename = "downloaded_media.mp4" if choice != 'audio' else "downloaded_media.mp3"
     
+    # تحديد تنسيق الجودة حسب اختيار المستخدم
     if choice == 'best':
         fmt = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
     elif choice in ['1080p', '720p', '480p', '360p']:
@@ -134,7 +131,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         fmt = 'bestaudio/best'
 
-    # خيارات متقدمة تتضمن حزم OAuth وتجاوز حماية Bot Detection
+    # إعدادات yt-dlp مع خيارات الترجمة المدمجة
     ydl_opts = {
         'format': fmt,
         'outtmpl': filename,
@@ -144,15 +141,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'writeautomaticsub': True,
         'subtitleslangs': ['ar', 'en'],
         'embedsubtitles': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'ios'],
-                'oauth2': []
-            }
-        },
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        }
+        'extractor_args': {'youtube': {'player_client': ['ios', 'android']}}
     }
 
     try:
@@ -202,10 +191,11 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists(filename):
             os.remove(filename)
 
+
 if __name__ == '__main__':
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(button_click))
     print("البوت يعمل الآن بنجاح...")
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling()
