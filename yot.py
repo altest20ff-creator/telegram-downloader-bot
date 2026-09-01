@@ -11,13 +11,11 @@ from telegram.ext import (
 )
 import yt_dlp
 
-# الإعدادات الرئيسية
 TOKEN = os.getenv("BOT_TOKEN", "8081564731:AAFazIC1PLGMdMF0yeMUCT915N2yOWci4L8")
 CHANNEL_USERNAME = "@kingdeveloper2004"
 CHANNEL_URL = "https://t.me/kingdeveloper2004"
 
 def unshorten_url(url: str) -> str:
-    """فك الروابط المختصرة مثل vt.tiktok.com و youtu.be لتفادي الحظر"""
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
@@ -28,7 +26,6 @@ def unshorten_url(url: str) -> str:
         return url
 
 def upload_to_gofile(file_path):
-    """رفع الملفات الكبيرة إلى GoFile والحصول على رابط مباشر مجاني"""
     try:
         server_resp = requests.get("https://api.gofile.io/getServer").json()
         if server_resp.get("status") == "ok":
@@ -45,7 +42,6 @@ def upload_to_gofile(file_path):
     return None
 
 async def check_subscription(user_id, context):
-    """فحص ما إذا كان المستخدم مشتركاً في القناة أم لا"""
     try:
         member = await context.bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user_id)
         return member.status in ['member', 'administrator', 'creator']
@@ -138,7 +134,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         fmt = 'bestaudio/best'
 
-    # إعدادات yt-dlp المحدثة والآمنة لتجاوز حظر الخوادم
+    # خيارات متقدمة تتضمن حزم OAuth وتجاوز حماية Bot Detection
     ydl_opts = {
         'format': fmt,
         'outtmpl': filename,
@@ -150,13 +146,12 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'embedsubtitles': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['ios', 'android', 'mweb'],
-                'player_skip': ['webpage', 'configs']
+                'player_client': ['android', 'ios'],
+                'oauth2': []
             }
         },
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
         }
     }
 
