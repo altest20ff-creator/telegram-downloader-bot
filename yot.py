@@ -122,12 +122,12 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     filename = "downloaded_media.mp4" if choice != 'audio' else "downloaded_media.mp3"
     
-    # صيغ مرنة لتفادي خطأ عدم توفر الجودة المطلوبة
+    # تحسين صياغة الاستعلام مع وضع خطة احتياطية كاملة
     if choice == 'best':
         fmt = 'bestvideo+bestaudio/best'
     elif choice in ['1080p', '720p', '480p', '360p']:
         height = choice.replace('p', '')
-        fmt = f'bestvideo[height<={height}]+bestaudio/best[height<={height}]/best'
+        fmt = f'bestvideo[height<={height}]+bestaudio/best[height<={height}]/bestvideo+bestaudio/best'
     else:
         fmt = 'bestaudio/best'
 
