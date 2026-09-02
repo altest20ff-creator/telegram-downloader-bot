@@ -7,32 +7,33 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import yt_dlp
 
-# إعداد السجلات
+# إعداد السجلات Logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
-logger = logging.getLogger(__name__)
+logger = logger = logging.getLogger(__name__)
 
 # جلب الرموز من متغيرات البيئة
 TOKEN = os.environ.get("BOT_TOKEN")
 WEBHOOK_URL = os.environ.get("RENDER_EXTERNAL_URL")
 
-# إعداد تطبيق Flask والتليجرام
+# إنشاء تطبيق Flask والتليجرام
 app = Flask(__name__)
 application = Application.builder().token(TOKEN).build()
 
-# --- ضبط الـ Webhook تلقائياً فور تشغيل التطبيق على Render ---
-if TOKEN and WEBHOOK_URL:
-    try:
-        full_url = f"{WEBHOOK_URL.rstrip('/')}/webhook"
-        # إنشاء دورة أحداث مستقلة لضبط الويب هوك عند الإقلاع
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(application.bot.set_webhook(url=full_url))
-        logger.info(f"✅ تم ضبط الـ Webhook بنجاح على: {full_url}")
-    except Exception as e:
-        logger.error(f"❌ خطأ أثناء ضبط الـ Webhook: {e}")
+
+# دالة إعداد البوت والـ Webhook عند بدء التشغيل
+async def setup_bot():
+    await application.initialize()
+    await application.start()
+    if WEBHOOK_URL:
+        url = f"{WEBHOOK_URL.rstrip('/')}/webhook"
+        await application.bot.set_webhook(url=url)
+        logger.info(f"✅ تم ربط الـ Webhook بنجاح على: {url}")
+
+# تشغيل التهيئة فور تحميل الملف
+asyncio.run(setup_bot())
 
 
 @app.route('/')
@@ -45,10 +46,8 @@ def webhook():
     if request.method == "POST":
         try:
             update = Update.de_json(request.get_json(force=True), application.bot)
-            # تشغيل معالجة التحديث في خلفية النظام
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(application.process_update(update))
+            # معالجة التحديث في دورة الأحداث Async
+            asyncio.run(application.process_update(update))
         except Exception as e:
             logger.error(f"خطأ أثناء معالجة التحديث: {e}")
         return "ok", 200
@@ -73,7 +72,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     msg = await update.message.reply_text("جاري معالجة الرابط والتحميل... ⏳")
-
     filename = f"download_{update.message.message_id}.mp4"
 
     ydl_opts = {
@@ -99,7 +97,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if os.path.exists("cookies.txt"):
         ydl_opts['cookiefile'] = "cookies.txt"
-        logger.info("تم العثور على ملف cookies.txt وتفعيله.")
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -121,7 +118,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(filename)
 
 
-# إضافة معالجات الأوامر
+# تسجيل معالجات الأوامر
 application.add_handler(CommandHandler("start", start_command))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
