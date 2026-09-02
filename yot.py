@@ -1,5 +1,7 @@
 import os
+import threading
 import requests
+from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -11,14 +13,24 @@ from telegram.ext import (
 )
 import yt_dlp
 
-# الإعدادات الرئيسية (يفضل استخدام متغيرات البيئة لتبديل التوكن للحماية)
-TOKEN = os.environ.get("BOT_TOKEN", "8081564731:AAFazIC1PLGMdMF0yeMUCT915N2yOWci4L8")
+# --- 1. إنشاء خادم Flask لإبقاء الخدمة نشطة على Render ---
+app_flask = Flask(__name__)
+
+@app_flask.route('/')
+def home():
+    return "Bot is running 24/7!"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    app_flask.run(host="0.0.0.0", port=port)
+
+# --- 2. إعدادات البوت الرئيسية ---
+TOKEN = os.getenv("BOT_TOKEN", "8081564731:AAFazIC1PLGMdMF0yeMUCT915N2yOWci4L8")
 CHANNEL_USERNAME = "@kingdeveloper2004"
 CHANNEL_URL = "https://t.me/kingdeveloper2004"
 
-
 def upload_to_gofile(file_path):
-    """رفع الملفات الكبيرة إلى GoFile والحصول على رابط مباشر مجاني"""
+    """رفع الملفات الكبيرة إلى GoFile"""
     try:
         server_resp = requests.get("https://api.gofile.io/getServer").json()
         if server_resp.get("status") == "ok":
@@ -34,16 +46,14 @@ def upload_to_gofile(file_path):
         print(f"GoFile Upload Error: {e}")
     return None
 
-
 async def check_subscription(user_id, context):
-    """فحص ما إذا كان المستخدم مشتركاً في القناة أم لا"""
+    """فحص اشتراك المستخدم في القناة"""
     try:
         member = await context.bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user_id)
         return member.status in ['member', 'administrator', 'creator']
     except Exception as e:
         print(f"خطأ في التحقق من الاشتراك: {e}")
         return True
-
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -66,7 +76,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "أهلاً بك! أرسل لي رابط أي فيديو وسأقوم بتحميله لك فوراً مع الترجمة والجودة المطلوبة.",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
-
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -99,7 +108,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await update.message.reply_text("اختر الجودة أو الصيغة المطلوبة:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -122,7 +130,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     filename = "downloaded_media.mp4" if choice != 'audio' else "downloaded_media.mp3"
     
-    # تحديد تنسيق الجودة حسب اختيار المستخدم
     if choice == 'best':
         fmt = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
     elif choice in ['1080p', '720p', '480p', '360p']:
@@ -131,7 +138,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         fmt = 'bestaudio/best'
 
-    # إعدادات yt-dlp المحسّنة لتجاوز قيود وتجاوز حظر YouTube & TikTok
     ydl_opts = {
         'format': fmt,
         'outtmpl': filename,
@@ -141,27 +147,28 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'writeautomaticsub': True,
         'subtitleslangs': ['ar', 'en'],
         'embedsubtitles': True,
-        
-        # تمرير ملف الكوكيز إن وجد لفك حظر الحسابات المطلوبة
-        'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
-        
-        # محاكاة تطبيقات المحمول والأجهزة الذكية
+        'geo_bypass': True,
+        'user_agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios', 'mweb']
+                'player_client': ['android', 'ios', 'web_embedded'],
+                'skip': ['hls', 'dash']
+            },
+            'tiktok': {
+                'app_version': '30.0.0'
             }
-        },
-        
-        # محاكاة متصفح أندرويد حقيقي للتغلب على كشف البوتات
-        'user_agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36',
+        }
     }
+
+    if os.path.exists("cookies.txt"):
+        ydl_opts['cookiefile'] = "cookies.txt"
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 
         if not os.path.exists(filename):
-            await query.edit_message_text("❌ تعذر تحميل الملف، تأكد من صحة الرابط.")
+            await query.edit_message_text("❌ تعذر تحميل الملف، تأكد من صحة الرابط أو جرب جودة أخرى.")
             return
 
         file_size = os.path.getsize(filename) / (1024 * 1024)
@@ -203,11 +210,15 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists(filename):
             os.remove(filename)
 
-
+# --- 3. تشغيل الـ Flask Server والبوت معاً ---
 if __name__ == '__main__':
+    # تشغيل سيرفر Flask في Thread منفصل
+    threading.Thread(target=run_flask, daemon=True).start()
+
+    # تشغيل بوت تليجرام
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(button_click))
-    print("البوت يعمل الآن بنجاح...")
+    print("البوت وسيرفر الويب يعملان الآن بنجاح...")
     app.run_polling()
