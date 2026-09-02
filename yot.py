@@ -12,7 +12,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
-logger = logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 # جلب الرموز من متغيرات البيئة
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -21,19 +21,6 @@ WEBHOOK_URL = os.environ.get("RENDER_EXTERNAL_URL")
 # إنشاء تطبيق Flask والتليجرام
 app = Flask(__name__)
 application = Application.builder().token(TOKEN).build()
-
-
-# دالة إعداد البوت والـ Webhook عند بدء التشغيل
-async def setup_bot():
-    await application.initialize()
-    await application.start()
-    if WEBHOOK_URL:
-        url = f"{WEBHOOK_URL.rstrip('/')}/webhook"
-        await application.bot.set_webhook(url=url)
-        logger.info(f"✅ تم ربط الـ Webhook بنجاح على: {url}")
-
-# تشغيل التهيئة فور تحميل الملف
-asyncio.run(setup_bot())
 
 
 @app.route('/')
@@ -45,9 +32,15 @@ def home():
 def webhook():
     if request.method == "POST":
         try:
-            update = Update.de_json(request.get_json(force=True), application.bot)
-            # معالجة التحديث في دورة الأحداث Async
-            asyncio.run(application.process_update(update))
+            # معالجة التحديث القادم من تلجرام
+            json_data = request.get_json(force=True)
+            update = Update.de_json(json_data, application.bot)
+            
+            # تشغيل معالجة التحديث في خلفية النظام مع asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(application.process_update(update))
+            loop.close()
         except Exception as e:
             logger.error(f"خطأ أثناء معالجة التحديث: {e}")
         return "ok", 200
@@ -118,11 +111,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(filename)
 
 
-# تسجيل معالجات الأوامر
+# تسجيل الأوامر
 application.add_handler(CommandHandler("start", start_command))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
 
+# دالة لربط Webhook عند بدء تشغيل السيرفر تلقائياً
+def init_webhook():
+    if TOKEN and WEBHOOK_URL:
+        full_url = f"{WEBHOOK_URL.rstrip('/')}/webhook"
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(application.initialize())
+        loop.run_until_complete(application.bot.set_webhook(url=full_url))
+        logger.info(f"✅ تم ضبط الـ Webhook بنجاح على: {full_url}")
+        loop.close()
+
+# تشغيل الربط
+try:
+    init_webhook()
+except Exception as e:
+    logger.error(f"خطأ في إعداد الويب هوك الأولية: {e}")
+
+
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
