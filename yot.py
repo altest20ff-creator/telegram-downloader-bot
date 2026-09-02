@@ -122,16 +122,15 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     filename = "downloaded_media.mp4" if choice != 'audio' else "downloaded_media.mp3"
     
-    # تحسين صياغة الاستعلام مع وضع خطة احتياطية كاملة
+    # اختيار الصيغ بطريقة خفيفة على الذاكرة لتناسب سيرفر 256MB
     if choice == 'best':
-        fmt = 'bestvideo+bestaudio/best'
+        fmt = 'best/bestvideo+bestaudio'
     elif choice in ['1080p', '720p', '480p', '360p']:
         height = choice.replace('p', '')
-        fmt = f'bestvideo[height<={height}]+bestaudio/best[height<={height}]/bestvideo+bestaudio/best'
+        fmt = f'best[height<={height}]/bestvideo[height<={height}]+bestaudio/best'
     else:
         fmt = 'bestaudio/best'
 
-    # إعدادات yt-dlp المعالجة
     ydl_opts = {
         'format': fmt,
         'outtmpl': filename,
@@ -142,7 +141,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'subtitleslangs': ['ar', 'en'],
         'embedsubtitles': True,
         'cookiefile': 'cookies.txt',
-        'merge_output_format': 'mp4' if choice != 'audio' else None,
         'extractor_args': {'youtube': {'player_client': ['android', 'ios', 'mweb']}}
     }
 
