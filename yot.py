@@ -11,8 +11,8 @@ from telegram.ext import (
 )
 import yt_dlp
 
-# الإعدادات الرئيسية
-TOKEN = "8081564731:AAFxCnLSQgn7jlsZvGSdMXMzC3pGsVmAXkM"
+# الإعدادات الرئيسية (يفضل استخدام متغيرات البيئة لتبديل التوكن للحماية)
+TOKEN = os.environ.get("BOT_TOKEN", "8081564731:AAFazIC1PLGMdMF0yeMUCT915N2yOWci4L8")
 CHANNEL_USERNAME = "@kingdeveloper2004"
 CHANNEL_URL = "https://t.me/kingdeveloper2004"
 
@@ -131,7 +131,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         fmt = 'bestaudio/best'
 
-    # إعدادات yt-dlp مع خيارات الترجمة المدمجة
+    # إعدادات yt-dlp المحسّنة لتجاوز قيود وتجاوز حظر YouTube & TikTok
     ydl_opts = {
         'format': fmt,
         'outtmpl': filename,
@@ -141,7 +141,19 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'writeautomaticsub': True,
         'subtitleslangs': ['ar', 'en'],
         'embedsubtitles': True,
-        'extractor_args': {'youtube': {'player_client': ['ios', 'android']}}
+        
+        # تمرير ملف الكوكيز إن وجد لفك حظر الحسابات المطلوبة
+        'cookiefile': 'cookies.txt' if os.path.exists('cookies.txt') else None,
+        
+        # محاكاة تطبيقات المحمول والأجهزة الذكية
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios', 'mweb']
+            }
+        },
+        
+        # محاكاة متصفح أندرويد حقيقي للتغلب على كشف البوتات
+        'user_agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36',
     }
 
     try:
