@@ -1,4 +1,6 @@
-python-telegram-bot
-yt-dlp
+python-telegram-bot>=20.0
 requests
+yt-dlp>=2024.08.01
+flask
+
 
