@@ -122,12 +122,12 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     filename = "downloaded_media.mp4" if choice != 'audio' else "downloaded_media.mp3"
     
-    # اختيار الصيغ بطريقة خفيفة على الذاكرة لتناسب سيرفر 256MB
+    # استخدام صيغ مبسطة لمنع خطأ Requested format ولتفادي دمج FFmpeg الذي يستهلك RAM
     if choice == 'best':
-        fmt = 'best/bestvideo+bestaudio'
+        fmt = 'best'
     elif choice in ['1080p', '720p', '480p', '360p']:
         height = choice.replace('p', '')
-        fmt = f'best[height<={height}]/bestvideo[height<={height}]+bestaudio/best'
+        fmt = f'best[height<={height}]/best'
     else:
         fmt = 'bestaudio/best'
 
@@ -139,7 +139,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'writesubtitles': True,
         'writeautomaticsub': True,
         'subtitleslangs': ['ar', 'en'],
-        'embedsubtitles': True,
+        'embedsubtitles': False,  # تعطيل الدمج الداخلي لمنع استهلاك RAM
         'cookiefile': 'cookies.txt',
         'extractor_args': {'youtube': {'player_client': ['android', 'ios', 'mweb']}}
     }
