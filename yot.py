@@ -12,7 +12,7 @@ from telegram.ext import (
 import yt_dlp
 
 # الإعدادات الرئيسية
-TOKEN = "8081564731:AAFazIC1PLGMdMF0yeMUCT915N2yOWci4L8"
+TOKEN = "8081564731:AAGf9CrIo6exdkdWKdYZUj5G4qZzw2O3scQ"
 CHANNEL_USERNAME = "@kingdeveloper2004"
 CHANNEL_URL = "https://t.me/kingdeveloper2004"
 
