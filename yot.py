@@ -118,28 +118,24 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     choice = query.data
-    await query.edit_message_text("⏳ جاري التحميل، معالجة الجودة وتدميج الترجمة إن وجدت...")
+    await query.edit_message_text("⏳ جاري التحميل...")
 
     filename = "downloaded_media.mp4" if choice != 'audio' else "downloaded_media.mp3"
     
-    # استخدام صيغ مبسطة لمنع خطأ Requested format ولتفادي دمج FFmpeg الذي يستهلك RAM
-    if choice == 'best':
-        fmt = 'best'
-    elif choice in ['1080p', '720p', '480p', '360p']:
-        height = choice.replace('p', '')
-        fmt = f'best[height<={height}]/best'
-    else:
+    # تحديد صيغ مضمونة تنفّذ التحميل المباشر وتمنع أخطاء الاختيار وتناسب الـ RAM الضعيف
+    if choice == 'audio':
         fmt = 'bestaudio/best'
+    elif choice == 'best':
+        fmt = 'b/bv*+ba/best'
+    else:
+        height = choice.replace('p', '')
+        fmt = f'b[height<={height}]/bv*[height<={height}]+ba/best'
 
     ydl_opts = {
         'format': fmt,
         'outtmpl': filename,
         'quiet': True,
         'nocheckcertificate': True,
-        'writesubtitles': True,
-        'writeautomaticsub': True,
-        'subtitleslangs': ['ar', 'en'],
-        'embedsubtitles': False,  # تعطيل الدمج الداخلي لمنع استهلاك RAM
         'cookiefile': 'cookies.txt',
         'extractor_args': {'youtube': {'player_client': ['android', 'ios', 'mweb']}}
     }
