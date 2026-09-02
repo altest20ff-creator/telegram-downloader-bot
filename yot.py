@@ -1,39 +1,56 @@
 import os
 import re
 import logging
+import asyncio
 from flask import Flask, request
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import yt_dlp
 
-# إعداد السجلات (Logging)
+# إعداد السجلات
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# جلب الرموز من متغيرات البيئة Enviroment Variables
+# جلب الرموز من متغيرات البيئة
 TOKEN = os.environ.get("BOT_TOKEN")
 WEBHOOK_URL = os.environ.get("RENDER_EXTERNAL_URL")
 
-# إعداد تطبيق Flask لإبقاء السيرفر نشطاً ولـ Webhook
+# إعداد تطبيق Flask والتليجرام
 app = Flask(__name__)
-
-# إعداد تطبيق التلجرام
 application = Application.builder().token(TOKEN).build()
+
+# --- ضبط الـ Webhook تلقائياً فور تشغيل التطبيق على Render ---
+if TOKEN and WEBHOOK_URL:
+    try:
+        full_url = f"{WEBHOOK_URL.rstrip('/')}/webhook"
+        # إنشاء دورة أحداث مستقلة لضبط الويب هوك عند الإقلاع
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(application.bot.set_webhook(url=full_url))
+        logger.info(f"✅ تم ضبط الـ Webhook بنجاح على: {full_url}")
+    except Exception as e:
+        logger.error(f"❌ خطأ أثناء ضبط الـ Webhook: {e}")
 
 
 @app.route('/')
 def home():
-    return "البوت شغال وسيرفر الويب يعمل بنجاح!"
+    return "البوت شغال والسيرفر يعمل بنجاح!"
 
 
 @app.route('/webhook', methods=['POST'])
-async def webhook():
+def webhook():
     if request.method == "POST":
-        update = Update.de_json(request.get_json(force=True), application.bot)
-        await application.process_update(update)
+        try:
+            update = Update.de_json(request.get_json(force=True), application.bot)
+            # تشغيل معالجة التحديث في خلفية النظام
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(application.process_update(update))
+        except Exception as e:
+            logger.error(f"خطأ أثناء معالجة التحديث: {e}")
         return "ok", 200
 
 
@@ -59,7 +76,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     filename = f"download_{update.message.message_id}.mp4"
 
-    # خيارات yt-dlp المحدثة لتخطي الحظر عبر الكوكيز والمشغلات الآمنة
     ydl_opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': filename,
@@ -81,12 +97,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
     }
 
-    # التحقق من وجود ملف الكوكيز واستخدامه
     if os.path.exists("cookies.txt"):
         ydl_opts['cookiefile'] = "cookies.txt"
         logger.info("تم العثور على ملف cookies.txt وتفعيله.")
-    else:
-        logger.warning("لم يتم العثور على ملف cookies.txt، التحميل جارٍ بدون كوكيز.")
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -97,7 +110,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with open(filename, 'rb') as video_file:
             await update.message.reply_video(video=video_file, caption="تم التحميل بواسطة البوت 🎬")
 
-        # حذف الفيديو بعد الإرسال لتوفير مساحة السيرفر
         if os.path.exists(filename):
             os.remove(filename)
         await msg.delete()
@@ -109,19 +121,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(filename)
 
 
-# إضافة الأوامر والمشغلات للتطبيق
+# إضافة معالجات الأوامر
 application.add_handler(CommandHandler("start", start_command))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
 
 if __name__ == '__main__':
-    # ضبط الـ Webhook تلقائياً عند التشغيل
-    if WEBHOOK_URL:
-        full_webhook_url = f"{WEBHOOK_URL.rstrip('/')}/webhook"
-        import asyncio
-        asyncio.run(application.bot.set_webhook(url=full_webhook_url))
-        logger.info(f"تم ضبط Webhook على: {full_webhook_url}")
-
-    # تشغيل السيرفر على البورت المحدد من Render
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
