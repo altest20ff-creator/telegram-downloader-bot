@@ -1,6 +1,6 @@
-python-telegram-bot>=20.0
-requests
-yt-dlp>=2024.08.01
-flask
+python-telegram-bot==20.7
+yt-dlp
+Flask
+gunicorn
 
 
