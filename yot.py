@@ -16,6 +16,7 @@ TOKEN = "8081564731:AAFazIC1PLGMdMF0yeMUCT915N2yOWci4L8"
 CHANNEL_USERNAME = "@kingdeveloper2004"
 CHANNEL_URL = "https://t.me/kingdeveloper2004"
 
+
 def upload_to_gofile(file_path):
     """رفع الملفات الكبيرة إلى GoFile والحصول على رابط مباشر مجاني"""
     try:
@@ -33,6 +34,7 @@ def upload_to_gofile(file_path):
         print(f"GoFile Upload Error: {e}")
     return None
 
+
 async def check_subscription(user_id, context):
     """فحص ما إذا كان المستخدم مشتركاً في القناة أم لا"""
     try:
@@ -41,6 +43,7 @@ async def check_subscription(user_id, context):
     except Exception as e:
         print(f"خطأ في التحقق من الاشتراك: {e}")
         return True
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -63,6 +66,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "أهلاً بك! أرسل لي رابط أي فيديو وسأقوم بتحميله لك فوراً مع الترجمة والجودة المطلوبة.",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -95,6 +99,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await update.message.reply_text("اختر الجودة أو الصيغة المطلوبة:", reply_markup=InlineKeyboardMarkup(keyboard))
 
+
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -126,7 +131,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         fmt = 'bestaudio/best'
 
-    # إعدادات yt-dlp مع خيارات الترجمة المدمجة
+    # إعدادات yt-dlp مع استخدام ملف الكوكيز للتغلب على حظر يوتيوب
     ydl_opts = {
         'format': fmt,
         'outtmpl': filename,
@@ -136,7 +141,8 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'writeautomaticsub': True,
         'subtitleslangs': ['ar', 'en'],
         'embedsubtitles': True,
-        'extractor_args': {'youtube': {'player_client': ['ios', 'android']}}
+        'cookiefile': 'cookies.txt',
+        'extractor_args': {'youtube': {'player_client': ['android', 'ios', 'mweb']}}
     }
 
     try:
@@ -186,7 +192,9 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists(filename):
             os.remove(filename)
 
+
 if __name__ == '__main__':
+
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
