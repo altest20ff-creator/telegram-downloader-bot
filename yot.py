@@ -3,14 +3,21 @@ import re
 import shutil
 import asyncio
 import tempfile
-import logging
+import threading
 from pathlib import Path
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import requests
 import yt_dlp
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
+from telegram.constants import ChatMemberStatus
 from telegram.ext import (
-    ApplicationBuilder,
+    Application,
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
@@ -18,439 +25,1030 @@ from telegram.ext import (
     filters,
 )
 
-# =========================
+
+# =========================================================
 # الإعدادات
-# =========================
-# جلب التوكن من متغيرات البيئة تلقائياً لعدم تسريبه
-TOKEN = os.getenv("BOT_TOKEN", "")
-CHANNEL_USERNAME = "@kingdeveloper2004"
-CHANNEL_URL = "https://t.me/kingdeveloper2004"
+# =========================================================
 
-# حدود التليجرام
-TELEGRAM_LIMIT_MB = 49
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
-# قفل لمنع التحميل المتزامن لحماية الـ RAM (512MB limit)
+CHANNEL_USERNAME = os.getenv(
+    "CHANNEL_USERNAME",
+    "@kingdeveloper2004"
+).strip()
+
+CHANNEL_URL = os.getenv(
+    "CHANNEL_URL",
+    "https://t.me/kingdeveloper2004"
+).strip()
+
+# Telegram يضع حدًا يقارب 50MB للرفع المباشر حاليًا.
+# نستخدم 49MB حتى يكون لدينا هامش أمان.
+TELEGRAM_LIMIT = 49 * 1024 * 1024
+
+# مجلد مؤقت
+DOWNLOAD_ROOT = Path("/tmp/telegram_downloader")
+
+# لا نسمح بأكثر من تحميل في نفس الوقت
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(1)
 
-logging.basicConfig(
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    level=logging.INFO,
-)
-log = logging.getLogger("downloader")
+
+# =========================================================
+# التحقق من الإعدادات
+# =========================================================
+
+if not BOT_TOKEN:
+    raise RuntimeError(
+        "BOT_TOKEN غير موجود. أضفه في Render Environment Variables."
+    )
 
 
-# =========================
-# أدوات مساعدة
-# =========================
-def clean_error(exc):
-    s = str(exc)
-    if "The page needs to be reloaded" in s:
-        return "YouTube رفض الجلسة الحالية. تأكد من تحديث ملف cookies.txt."
-    return s[-1500:]
+# =========================================================
+# Health Check لـ Render
+# =========================================================
+
+class HealthHandler(BaseHTTPRequestHandler):
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"Bot is running")
+
+    def log_message(self, format, *args):
+        return
 
 
-def upload_to_gofile(file_path):
-    """رفع الملف مباشرة إلى GoFile."""
-    try:
-        with open(file_path, "rb") as f:
-            r = requests.post(
-                "https://upload.gofile.io/uploadfile",
-                files={"file": f},
-                timeout=1800,
-            )
-        data = r.json()
+def start_health_server():
+    port = int(os.getenv("PORT", "10000"))
 
-        if data.get("status") == "ok":
-            d = data.get("data", {})
-            return d.get("downloadPage") or d.get("directLink")
+    server = HTTPServer(
+        ("0.0.0.0", port),
+        HealthHandler
+    )
 
-        log.error("GoFile response: %s", data)
-    except Exception:
-        log.exception("GoFile upload failed")
+    print(f"Health server running on port {port}")
+
+    thread = threading.Thread(
+        target=server.serve_forever,
+        daemon=True
+    )
+
+    thread.start()
+
+
+# =========================================================
+# العثور على cookies.txt
+# =========================================================
+
+def find_cookie_file():
+    possible_files = [
+        Path("/etc/secrets/cookies.txt"),
+        Path("/app/cookies.txt"),
+        Path("cookies.txt"),
+    ]
+
+    for file in possible_files:
+        try:
+            if file.exists() and file.stat().st_size > 0:
+                print(f"Using cookies file: {file}")
+                return str(file)
+        except Exception:
+            pass
+
+    print("No cookies.txt found.")
     return None
 
 
-async def check_subscription(user_id, context):
-    try:
-        member = await context.bot.get_chat_member(
-            chat_id=CHANNEL_USERNAME,
-            user_id=user_id,
-        )
-        return member.status in ("member", "administrator", "creator")
-    except Exception as e:
-        log.warning("Subscription check failed: %s", e)
-        return True
+# =========================================================
+# تنظيف الرابط
+# =========================================================
+
+def clean_url(url: str) -> str:
+    url = url.strip()
+
+    # إزالة المسافات
+    url = url.replace(" ", "")
+
+    return url
 
 
-def build_formats(choice):
-    if choice == "audio":
-        return ["bestaudio/best"]
-
-    if choice == "best":
-        return ["bestvideo+bestaudio/best"]
-
-    height = choice.replace("p", "")
-    return [
-        f"bestvideo[height<={height}]+bestaudio/best[height<={height}]",
-        f"best[height<={height}]",
-        "bestvideo+bestaudio/best",
-        "best",
+def is_supported_url(url: str) -> bool:
+    patterns = [
+        r"youtube\.com",
+        r"youtu\.be",
+        r"youtube-nocookie\.com",
     ]
 
+    return any(
+        re.search(pattern, url, re.IGNORECASE)
+        for pattern in patterns
+    )
 
-def make_ydl_opts(outtmpl, choice):
-    opts = {
-        "outtmpl": outtmpl,
-        "format": build_formats(choice)[0],
+
+# =========================================================
+# الأزرار
+# =========================================================
+
+def quality_keyboard():
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "أفضل جودة",
+                callback_data="quality_best"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "1080p",
+                callback_data="quality_1080"
+            ),
+            InlineKeyboardButton(
+                "720p",
+                callback_data="quality_720"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "480p",
+                callback_data="quality_480"
+            ),
+            InlineKeyboardButton(
+                "360p",
+                callback_data="quality_360"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "🎵 صوت فقط",
+                callback_data="quality_audio"
+            )
+        ],
+    ]
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+# =========================================================
+# صيغ التحميل
+# =========================================================
+
+def get_format(quality: str):
+
+    if quality == "best":
+        return (
+            "bv*+ba/b"
+        )
+
+    if quality == "1080":
+        return (
+            "bv*[height<=1080]+ba/"
+            "b[height<=1080]/"
+            "bv*+ba/b"
+        )
+
+    if quality == "720":
+        return (
+            "bv*[height<=720]+ba/"
+            "b[height<=720]/"
+            "bv*+ba/b"
+        )
+
+    if quality == "480":
+        return (
+            "bv*[height<=480]+ba/"
+            "b[height<=480]/"
+            "bv*+ba/b"
+        )
+
+    if quality == "360":
+        return (
+            "bv*[height<=360]+ba/"
+            "b[height<=360]/"
+            "bv*+ba/b"
+        )
+
+    if quality == "audio":
+        return "ba/b"
+
+    return "bv*+ba/b"
+
+
+# =========================================================
+# إعدادات yt-dlp
+# =========================================================
+
+def create_ydl_options(
+    output_dir: str,
+    quality: str,
+    cookie_file=None
+):
+
+    is_audio = quality == "audio"
+
+    options = {
+        "outtmpl": str(
+            Path(output_dir) /
+            "%(title).120s [%(id)s].%(ext)s"
+        ),
+
+        "format": get_format(quality),
+
         "noplaylist": True,
-        "quiet": True,
-        "no_warnings": False,
-        "continuedl": True,
-        "retries": 5,
-        "fragment_retries": 5,
+
+        # محاولات إضافية
+        "retries": 10,
+        "fragment_retries": 10,
+        "extractor_retries": 5,
+
         "file_access_retries": 5,
-        "extractor_retries": 3,
+
+        # مهلة الاتصال
         "socket_timeout": 30,
+
+        # لا نحمل عدة أجزاء في نفس الوقت
+        # حتى لا نستهلك RAM/CPU في Render
         "concurrent_fragment_downloads": 1,
-        "overwrites": True,
-        "merge_output_format": "mp4",
-        "sleep_interval": 1,
-        "max_sleep_interval": 2,
+
+        # إظهار معلومات مفيدة في Logs
+        "quiet": False,
+        "no_warnings": False,
+
+        # لا نريد حفظ cache ضخم
+        "cachedir": str(
+            Path(output_dir) / "cache"
+        ),
+
+        # محاولة دمج الفيديو والصوت بدون إعادة ترميز
+        "merge_output_format": "mp4/mkv",
+
+        # لا نحمل قائمة تشغيل كاملة
+        "playlistend": 1,
+
+        # عدم تنزيل الصور أو الترجمة أو أي ملفات إضافية
+        "writethumbnail": False,
+        "writesubtitles": False,
+        "writeautomaticsub": False,
+
+        # EJS / JavaScript
+        # Deno مثبت في Dockerfile
+        "js_runtimes": {
+            "deno": {}
+        },
+
+        # Headers طبيعية
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/139.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+        },
     }
 
-    # قراءة cookies.txt إذا كان موجوداً في المسار الرئيسي
-    cookie_path = Path("cookies.txt")
-    if cookie_path.exists() and cookie_path.stat().st_size > 0:
-        opts["cookiefile"] = str(cookie_path)
-        log.info("تم العثور على ملف cookies.txt واستخدامه.")
+    # =====================================================
+    # Cookies
+    # =====================================================
 
-    return opts
+    if cookie_file:
+        options["cookiefile"] = cookie_file
 
+    # =====================================================
+    # الصوت
+    # =====================================================
 
-def try_download(url, workdir, choice):
-    """تحميل الفيديو مع مراعاة القيود وتجنب فرض player_client متصلب."""
-    errors = []
+    if is_audio:
 
-    for fmt in build_formats(choice):
-        filename = Path(workdir) / "media"
-        outtmpl = str(filename) + ".%(ext)s"
-
-        opts = make_ydl_opts(outtmpl, choice)
-        opts["format"] = fmt
-
-        try:
-            log.info("Trying format=%s", fmt)
-
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([url])
-
-            candidates = [
-                p for p in Path(workdir).glob("media.*")
-                if p.is_file() and p.stat().st_size > 0
-            ]
-
-            if candidates:
-                candidates.sort(key=lambda p: p.stat().st_size, reverse=True)
-                return candidates[0], errors
-
-        except Exception as e:
-            msg = clean_error(e)
-            errors.append(f"{fmt} | {msg}")
-            log.warning("Download attempt failed: %s", msg)
-
-            for p in Path(workdir).glob("media.*"):
-                try:
-                    if p.is_file():
-                        p.unlink()
-                except Exception:
-                    pass
-
-    return None, errors
-
-
-def convert_audio_to_mp3(source, destination):
-    ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg:
-        raise RuntimeError("FFmpeg غير مثبت على السيرفر.")
-
-    import subprocess
-
-    subprocess.run(
-        [
-            ffmpeg,
-            "-y",
-            "-i", str(source),
-            "-vn",
-            "-codec:a", "libmp3lame",
-            "-q:a", "4",
-            str(destination),
-        ],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        timeout=1800,
-    )
-
-
-def convert_video_to_mp4_if_needed(source, destination):
-    """تجنب إعادة الترميز واستهلاك RAM قدر الإمكان."""
-    if source.suffix.lower() == ".mp4":
-        shutil.move(str(source), str(destination))
-        return
-
-    ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg:
-        raise RuntimeError("FFmpeg غير مثبت على السيرفر.")
-
-    import subprocess
-
-    # المحاولة الأولى: نسخ Stream فقط (بدون إجهاد CPU/RAM)
-    p = subprocess.run(
-        [
-            ffmpeg, "-y",
-            "-i", str(source),
-            "-c", "copy",
-            str(destination),
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        timeout=1800,
-    )
-
-    if p.returncode != 0:
-        # إعادة ترميز خفيف جداً مناسب لحدود Render (خيارات تستهلك ذاكرة أقل)
-        subprocess.run(
-            [
-                ffmpeg, "-y",
-                "-i", str(source),
-                "-c:v", "libx264",
-                "-preset", "ultrafast",
-                "-crf", "28",
-                "-c:a", "aac",
-                "-b:a", "128k",
-                str(destination),
-            ],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            timeout=3600,
-        )
-
-
-# =========================
-# Telegram Handlers
-# =========================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ok = await check_subscription(update.effective_user.id, context)
-
-    if not ok:
-        kb = [
-            [InlineKeyboardButton("📢 اشترك في القناة", url=CHANNEL_URL)],
-            [InlineKeyboardButton("✅ تحقق من الاشتراك", callback_data="check_sub")],
+        options["postprocessors"] = [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }
         ]
-        await update.message.reply_text(
-            "⚠️ يجب الاشتراك في القناة أولاً.",
-            reply_markup=InlineKeyboardMarkup(kb),
+
+    return options
+
+
+# =========================================================
+# البحث عن الملف الناتج
+# =========================================================
+
+def find_downloaded_file(directory: str):
+
+    directory = Path(directory)
+
+    files = []
+
+    for file in directory.rglob("*"):
+
+        if not file.is_file():
+            continue
+
+        # تجاهل الملفات المؤقتة
+        if file.name.endswith(".part"):
+            continue
+
+        if file.name.endswith(".ytdl"):
+            continue
+
+        if file.name.endswith(".json"):
+            continue
+
+        if file.name.endswith(".txt"):
+            continue
+
+        files.append(file)
+
+    if not files:
+        return None
+
+    # أكبر ملف غالبًا هو الفيديو/الصوت الحقيقي
+    files.sort(
+        key=lambda x: x.stat().st_size,
+        reverse=True
+    )
+
+    return files[0]
+
+
+# =========================================================
+# GoFile
+# =========================================================
+
+def upload_to_gofile(file_path: str):
+
+    url = "https://upload.gofile.io/uploadfile"
+
+    try:
+
+        with open(file_path, "rb") as file:
+
+            response = requests.post(
+                url,
+                files={
+                    "file": (
+                        Path(file_path).name,
+                        file,
+                        "application/octet-stream"
+                    )
+                },
+                timeout=1800
+            )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        print("GoFile response:", data)
+
+        # الشكل الحالي المعتاد
+        if data.get("status") == "ok":
+
+            result = data.get("data", {})
+
+            download_page = result.get(
+                "downloadPage"
+            )
+
+            if download_page:
+                return download_page
+
+            # احتياط
+            page = result.get("page")
+
+            if page:
+                return page
+
+        return None
+
+    except Exception as e:
+
+        print(
+            "GoFile upload error:",
+            repr(e)
         )
-        return
+
+        return None
+
+
+# =========================================================
+# التحميل
+# =========================================================
+
+def download_video(
+    url: str,
+    quality: str
+):
+
+    DOWNLOAD_ROOT.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    temp_dir = tempfile.mkdtemp(
+        prefix="job_",
+        dir=str(DOWNLOAD_ROOT)
+    )
+
+    cookie_file = find_cookie_file()
+
+    try:
+
+        options = create_ydl_options(
+            temp_dir,
+            quality,
+            cookie_file
+        )
+
+        print(
+            f"Starting download: "
+            f"{url} | quality={quality}"
+        )
+
+        with yt_dlp.YoutubeDL(options) as ydl:
+
+            info = ydl.extract_info(
+                url,
+                download=True
+            )
+
+            title = info.get(
+                "title",
+                "video"
+            )
+
+            duration = info.get(
+                "duration"
+            )
+
+            print(
+                f"Downloaded: {title}"
+            )
+
+        output_file = find_downloaded_file(
+            temp_dir
+        )
+
+        if not output_file:
+            raise RuntimeError(
+                "لم يتم العثور على الملف بعد التحميل."
+            )
+
+        return {
+            "file": str(output_file),
+            "title": title,
+            "duration": duration,
+        }
+
+    except Exception:
+
+        # تنظيف عند الخطأ
+        shutil.rmtree(
+            temp_dir,
+            ignore_errors=True
+        )
+
+        raise
+
+
+# =========================================================
+# حذف المجلد المؤقت
+# =========================================================
+
+def cleanup_file(file_path: str):
+
+    try:
+
+        path = Path(file_path)
+
+        if path.exists():
+
+            parent = path.parent
+
+            shutil.rmtree(
+                parent,
+                ignore_errors=True
+            )
+
+    except Exception as e:
+
+        print(
+            "Cleanup error:",
+            repr(e)
+        )
+
+
+# =========================================================
+# /start
+# =========================================================
+
+async def start_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    text = (
+        "👋 أهلاً بك في بوت تحميل الفيديوهات.\n\n"
+        "أرسل رابط فيديو YouTube وسأعطيك خيارات الجودة."
+    )
 
     await update.message.reply_text(
-        "أرسل رابط الفيديو من YouTube وسأقوم بتحميله لك."
+        text
     )
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
-        return
+# =========================================================
+# التحقق من الاشتراك
+# =========================================================
 
-    if not await check_subscription(update.effective_user.id, context):
-        kb = [
-            [InlineKeyboardButton("📢 اشترك في القناة", url=CHANNEL_URL)],
-            [InlineKeyboardButton("✅ تحقق", callback_data="check_sub")],
-        ]
-        await update.message.reply_text(
-            "⚠️ اشترك في القناة أولاً.",
-            reply_markup=InlineKeyboardMarkup(kb),
+async def is_subscribed(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user = update.effective_user
+
+    if not user:
+        return False
+
+    try:
+
+        member = await context.bot.get_chat_member(
+            chat_id=CHANNEL_USERNAME,
+            user_id=user.id
         )
+
+        valid_statuses = {
+            ChatMemberStatus.MEMBER,
+            ChatMemberStatus.ADMINISTRATOR,
+            ChatMemberStatus.OWNER,
+        }
+
+        return member.status in valid_statuses
+
+    except Exception as e:
+
+        print(
+            "Subscription check error:",
+            repr(e)
+        )
+
+        return False
+
+
+# =========================================================
+# رسالة الاشتراك
+# =========================================================
+
+async def send_subscription_message(
+    update: Update
+):
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "📢 اشترك في القناة",
+                    url=CHANNEL_URL
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "✅ تحققت من الاشتراك",
+                    callback_data="check_subscription"
+                )
+            ],
+        ]
+    )
+
+    await update.message.reply_text(
+        "⚠️ يجب الاشتراك في القناة أولاً.",
+        reply_markup=keyboard
+    )
+
+
+# =========================================================
+# استقبال الرابط
+# =========================================================
+
+async def receive_url(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not update.message:
         return
 
-    url = update.message.text.strip()
+    url = clean_url(
+        update.message.text or ""
+    )
 
-    if not re.match(r"^https?://", url, re.I):
-        await update.message.reply_text("❌ أرسل رابطاً يبدأ بـ http أو https.")
+    # التحقق من الاشتراك
+    subscribed = await is_subscribed(
+        update,
+        context
+    )
+
+    if not subscribed:
+
+        await send_subscription_message(
+            update
+        )
+
         return
 
+    # التحقق من الرابط
+    if not is_supported_url(url):
+
+        await update.message.reply_text(
+            "❌ أرسل رابط YouTube صحيح."
+        )
+
+        return
+
+    # حفظ الرابط مؤقتًا لهذا المستخدم
     context.user_data["url"] = url
 
-    kb = [
-        [InlineKeyboardButton("🎬 أعلى جودة", callback_data="best")],
-        [
-            InlineKeyboardButton("1080p", callback_data="1080p"),
-            InlineKeyboardButton("720p", callback_data="720p"),
-        ],
-        [
-            InlineKeyboardButton("480p", callback_data="480p"),
-            InlineKeyboardButton("360p", callback_data="360p"),
-        ],
-        [InlineKeyboardButton("🎵 MP3", callback_data="audio")],
-    ]
-
     await update.message.reply_text(
-        "اختر الجودة المطلوبة:",
-        reply_markup=InlineKeyboardMarkup(kb),
+        "🎬 اختر الجودة:",
+        reply_markup=quality_keyboard()
     )
 
 
-async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================================================
+# Callback
+# =========================================================
+
+async def callback_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
     query = update.callback_query
+
+    if not query:
+        return
+
     await query.answer()
 
-    if query.data == "check_sub":
-        if await check_subscription(query.from_user.id, context):
-            await query.edit_message_text("✅ تم التحقق. أرسل رابط الفيديو.")
-        else:
-            await query.answer(
-                "❌ لم يتم العثور على الاشتراك.",
-                show_alert=True,
-            )
-        return
+    # =============================================
+    # التحقق من الاشتراك
+    # =============================================
 
-    url = context.user_data.get("url")
-    if not url:
-        await query.edit_message_text("❌ انتهت الجلسة. أرسل الرابط من جديد.")
-        return
-
-    choice = query.data
-
-    # استخدام السيمفور لضمان تنفيذ عملية تحميل واحدة فقط في نفس الوقت على السيرفر
-    if DOWNLOAD_SEMAPHORE.locked():
-        await query.edit_message_text("⏳ يوجد عملية تحميل أخرى قيد التنفيذ، يرجى الانتظار قليلاً...")
-
-    async with DOWNLOAD_SEMAPHORE:
-        await query.edit_message_text("⏳ جاري التحميل والترتيب...")
-
-        workdir = tempfile.mkdtemp(prefix="ytbot_")
+    if query.data == "check_subscription":
 
         try:
-            source, errors = await asyncio.to_thread(
-                try_download,
-                url,
-                workdir,
-                choice,
+
+            member = await context.bot.get_chat_member(
+                chat_id=CHANNEL_USERNAME,
+                user_id=query.from_user.id
             )
 
-            if not source:
-                last = errors[-1] if errors else "لا توجد تفاصيل."
+            valid_statuses = {
+                ChatMemberStatus.MEMBER,
+                ChatMemberStatus.ADMINISTRATOR,
+                ChatMemberStatus.OWNER,
+            }
+
+            if member.status in valid_statuses:
+
                 await query.edit_message_text(
-                    "❌ تعذر تحميل هذا الفيديو.\n\n"
-                    f"السبب:\n{last[:1200]}"
+                    "✅ تم التحقق.\n"
+                    "أرسل رابط YouTube الآن."
                 )
-                return
-
-            final_file = Path(workdir) / (
-                "audio.mp3" if choice == "audio" else "video.mp4"
-            )
-
-            if choice == "audio":
-                await query.edit_message_text("🎵 جاري تجهيز ملف MP3...")
-                await asyncio.to_thread(
-                    convert_audio_to_mp3,
-                    source,
-                    final_file,
-                )
-            else:
-                await query.edit_message_text("⚙️ جاري تجهيز الفيديو...")
-                await asyncio.to_thread(
-                    convert_video_to_mp4_if_needed,
-                    source,
-                    final_file,
-                )
-
-            if not final_file.exists():
-                raise RuntimeError("لم يتم إنشاء الملف النهائي.")
-
-            size_mb = final_file.stat().st_size / 1024 / 1024
-
-            kb = InlineKeyboardMarkup(
-                [[InlineKeyboardButton("📢 قناتنا", url=CHANNEL_URL)]]
-            )
-
-            if size_mb <= TELEGRAM_LIMIT_MB:
-                await query.edit_message_text("⬆️ جاري إرسال الملف إلى Telegram...")
-
-                with open(final_file, "rb") as f:
-                    if choice == "audio":
-                        await context.bot.send_audio(
-                            chat_id=query.message.chat_id,
-                            audio=f,
-                            caption="✅ تم التحميل\n📢 " + CHANNEL_URL,
-                            reply_markup=kb,
-                        )
-                    else:
-                        await context.bot.send_video(
-                            chat_id=query.message.chat_id,
-                            video=f,
-                            caption="✅ تم التحميل\n📢 " + CHANNEL_URL,
-                            supports_streaming=True,
-                            reply_markup=kb,
-                        )
-
-                await query.delete_message()
 
             else:
+
                 await query.edit_message_text(
-                    f"📦 حجم الملف {size_mb:.1f} MB، أكبر من حد Telegram.\n"
-                    "⬆️ جاري رفعه إلى GoFile..."
+                    "❌ لم يتم العثور على اشتراكك.\n"
+                    "اشترك أولاً ثم اضغط تحقق.",
+                    reply_markup=InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    "📢 اشترك",
+                                    url=CHANNEL_URL
+                                )
+                            ],
+                            [
+                                InlineKeyboardButton(
+                                    "✅ تحقق",
+                                    callback_data="check_subscription"
+                                )
+                            ],
+                        ]
+                    )
                 )
-
-                link = await asyncio.to_thread(upload_to_gofile, str(final_file))
-
-                if link:
-                    await query.edit_message_text(
-                        f"✅ تم التحميل بنجاح!\n\n"
-                        f"📏 الحجم: {size_mb:.1f} MB\n\n"
-                        f"🔗 الرابط:\n{link}\n\n"
-                        f"📢 {CHANNEL_URL}",
-                        reply_markup=kb,
-                    )
-                else:
-                    await query.edit_message_text(
-                        "❌ تم تحميل الفيديو لكن فشل رفعه إلى GoFile.\n"
-                        "أعد المحاولة لاحقاً."
-                    )
 
         except Exception as e:
-            log.exception("Processing error")
-            await query.edit_message_text(
-                "❌ حدث خطأ أثناء تجهيز الملف:\n\n"
-                + clean_error(e)
+
+            print(
+                "Callback subscription error:",
+                repr(e)
             )
 
-        finally:
-            shutil.rmtree(workdir, ignore_errors=True)
+            await query.edit_message_text(
+                "❌ تعذر التحقق حاليًا. "
+                "تأكد أن البوت مشرف في القناة."
+            )
 
+        return
 
-# =========================
-# تشغيل
-# =========================
-def main():
-    if not TOKEN:
-        raise RuntimeError(
-            "BOT_TOKEN غير موجود. تأكد من إضافته إلى متغيرات البيئة (Environment Variables)."
+    # =============================================
+    # الجودة
+    # =============================================
+
+    quality_map = {
+        "quality_best": "best",
+        "quality_1080": "1080",
+        "quality_720": "720",
+        "quality_480": "480",
+        "quality_360": "360",
+        "quality_audio": "audio",
+    }
+
+    quality = quality_map.get(
+        query.data
+    )
+
+    if not quality:
+        return
+
+    url = context.user_data.get(
+        "url"
+    )
+
+    if not url:
+
+        await query.edit_message_text(
+            "❌ انتهت جلسة الرابط.\n"
+            "أرسل الرابط مرة أخرى."
         )
 
-    app = ApplicationBuilder().token(TOKEN).build()
+        return
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
+    quality_names = {
+        "best": "أفضل جودة",
+        "1080": "1080p",
+        "720": "720p",
+        "480": "480p",
+        "360": "360p",
+        "audio": "صوت MP3",
+    }
+
+    quality_name = quality_names.get(
+        quality,
+        quality
     )
-    app.add_handler(CallbackQueryHandler(button_click))
 
-    log.info("Bot started successfully.")
-    app.run_polling(
+    await query.edit_message_text(
+        f"⏳ جاري التحميل...\n"
+        f"الجودة: {quality_name}\n\n"
+        f"قد يستغرق ذلك بعض الوقت."
+    )
+
+    # =============================================
+    # تحميل واحد فقط
+    # =============================================
+
+    async with DOWNLOAD_SEMAPHORE:
+
+        try:
+
+            result = await asyncio.to_thread(
+                download_video,
+                url,
+                quality
+            )
+
+            file_path = result["file"]
+            title = result["title"]
+
+            file_size = Path(
+                file_path
+            ).stat().st_size
+
+            print(
+                f"File size: {file_size / 1024 / 1024:.2f} MB"
+            )
+
+            # =====================================
+            # Telegram
+            # =====================================
+
+            if file_size <= TELEGRAM_LIMIT:
+
+                await query.message.reply_text(
+                    "📤 جاري إرسال الملف إلى Telegram..."
+                )
+
+                try:
+
+                    if quality == "audio":
+
+                        with open(
+                            file_path,
+                            "rb"
+                        ) as audio_file:
+
+                            await query.message.reply_audio(
+                                audio=audio_file,
+                                title=title[:64]
+                            )
+
+                    else:
+
+                        # إذا كان MP4 نرسله كفيديو
+                        if file_path.lower().endswith(
+                            ".mp4"
+                        ):
+
+                            with open(
+                                file_path,
+                                "rb"
+                            ) as video_file:
+
+                                await query.message.reply_video(
+                                    video=video_file,
+                                    supports_streaming=True
+                                )
+
+                        else:
+
+                            # WebM/MKV وغيرها
+                            # نرسلها كملف بدل إعادة الترميز
+                            with open(
+                                file_path,
+                                "rb"
+                            ) as document:
+
+                                await query.message.reply_document(
+                                    document=document
+                                )
+
+                except Exception as telegram_error:
+
+                    print(
+                        "Telegram send error:",
+                        repr(telegram_error)
+                    )
+
+                    # إذا فشل Telegram ننتقل إلى GoFile
+                    await query.message.reply_text(
+                        "⚠️ تعذر الإرسال المباشر.\n"
+                        "جاري رفع الملف..."
+                    )
+
+                    link = await asyncio.to_thread(
+                        upload_to_gofile,
+                        file_path
+                    )
+
+                    if link:
+
+                        await query.message.reply_text(
+                            "✅ تم التحميل.\n\n"
+                            f"🔗 رابط التحميل:\n{link}"
+                        )
+
+                    else:
+
+                        await query.message.reply_text(
+                            "❌ فشل رفع الملف إلى GoFile."
+                        )
+
+            # =====================================
+            # أكبر من حد Telegram
+            # =====================================
+
+            else:
+
+                await query.message.reply_text(
+                    "📦 حجم الملف أكبر من حد Telegram.\n"
+                    "جاري رفعه إلى GoFile..."
+                )
+
+                link = await asyncio.to_thread(
+                    upload_to_gofile,
+                    file_path
+                )
+
+                if link:
+
+                    await query.message.reply_text(
+                        "✅ تم التحميل بنجاح.\n\n"
+                        f"📁 الحجم: "
+                        f"{file_size / 1024 / 1024:.1f} MB\n\n"
+                        f"🔗 رابط التحميل:\n{link}"
+                    )
+
+                else:
+
+                    await query.message.reply_text(
+                        "❌ تم تحميل الفيديو لكن فشل رفعه "
+                        "إلى GoFile."
+                    )
+
+            # تنظيف
+            cleanup_file(
+                file_path
+            )
+
+            # حذف الرابط من الذاكرة
+            context.user_data.pop(
+                "url",
+                None
+            )
+
+        except Exception as e:
+
+            print(
+                "DOWNLOAD ERROR:",
+                repr(e)
+            )
+
+            error_text = str(e)
+
+            # لا نرسل Logs ضخمة للمستخدم
+            if len(error_text) > 1200:
+                error_text = error_text[-1200:]
+
+            await query.message.reply_text(
+                "❌ تعذر تحميل الفيديو.\n\n"
+                "الخطأ الأخير:\n"
+                f"{error_text}"
+            )
+
+
+# =========================================================
+# معالجة الأخطاء
+# =========================================================
+
+async def error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    print(
+        "BOT ERROR:",
+        repr(context.error)
+    )
+
+
+# =========================================================
+# التشغيل
+# =========================================================
+
+def main():
+
+    print("Starting Telegram Downloader Bot...")
+
+    # Render Health Check
+    start_health_server()
+
+    # إنشاء التطبيق
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .build()
+    )
+
+    # Commands
+    application.add_handler(
+        CommandHandler(
+            "start",
+            start_command
+        )
+    )
+
+    # روابط / رسائل
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            receive_url
+        )
+    )
+
+    # الأزرار
+    application.add_handler(
+        CallbackQueryHandler(
+            callback_handler
+        )
+    )
+
+    # Errors
+    application.add_error_handler(
+        error_handler
+    )
+
+    print("Bot is running...")
+
+    application.run_polling(
         drop_pending_updates=True,
-        allowed_updates=Update.ALL_TYPES,
+        allowed_updates=Update.ALL_TYPES
     )
 
 
