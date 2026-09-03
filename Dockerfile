@@ -1,34 +1,53 @@
 FROM python:3.11-slim
 
-ENV PYTHONUNBUFFERED=1
-ENV PIP_NO_CACHE_DIR=1
+# =========================================================
+# إعدادات Python
+# =========================================================
 
-# أدوات النظام (تم إضافة unzip)
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# إضافة Deno إلى PATH
+ENV PATH="/root/.deno/bin:${PATH}"
+
+# =========================================================
+# تثبيت FFmpeg + Deno
+# =========================================================
+
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ffmpeg \
         curl \
-        unzip \
         ca-certificates \
-        git \
-    && rm -rf /var/lib/apt/lists/*
+        unzip && \
+    rm -rf /var/lib/apt/lists/*
 
-# Deno لتشغيل JavaScript الخاص بـ yt-dlp
+# تثبيت Deno
 RUN curl -fsSL https://deno.land/install.sh | sh
 
-ENV PATH="/root/.deno/bin:${PATH}"
+# =========================================================
+# مجلد المشروع
+# =========================================================
 
 WORKDIR /app
 
+# =========================================================
 # تثبيت Python packages
+# =========================================================
+
 COPY requirements.txt .
 
-RUN python -m pip install --upgrade pip && \
-    pip install -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
+# =========================================================
 # نسخ المشروع
+# =========================================================
+
 COPY . .
 
-EXPOSE 10000
+# =========================================================
+# تشغيل البوت
+# =========================================================
 
 CMD ["python", "yot.py"]
